@@ -1,4 +1,5 @@
 from .models import APIRequestLog
+from django.db import transaction
 from django.utils.timezone import now
 
 from rest_framework import exceptions
@@ -28,7 +29,7 @@ class LoggingMixin(object):
             data_dict = request.data
 
         # save to log
-        self.log = APIRequestLog.objects.create(
+        request.log = APIRequestLog.objects.create(
             user=user,
             requested_at=now(),
             path=request.path,
