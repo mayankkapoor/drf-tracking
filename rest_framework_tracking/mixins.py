@@ -28,7 +28,7 @@ class LoggingMixin(object):
             data_dict = request.data
 
         # save to log
-        request.log = APIRequestLog.objects.create(
+        self.log = APIRequestLog.objects.create(
             user=user,
             requested_at=now(),
             path=request.path,
@@ -39,22 +39,24 @@ class LoggingMixin(object):
             data=data_dict,
         )
 
-    def finalize_response(self, request, response, *args, **kwargs):
-        # regular finalize response
-        response = super(LoggingMixin, self).finalize_response(request, response, *args, **kwargs)
+    def dispatch(self, *args, **kwargs):
+        # Wrap normal processing in a transaction, so that even if
+        # there's an IntegrityError somewhere along the way, we can still
+        # log the response.
+        # http://stackoverflow.com/questions/21458387/transactionmanagementerror-you-cant-execute-queries-until-the-end-of-the-atom
+        with transaction.atomic():
+            response = super(LoggingMixin, self).dispatch(*args, **kwargs)
 
-        try:
+        if hasattr(self, 'log'):
             # compute response time
-            response_timedelta = now() - request.log.requested_at
+            response_timedelta = now() - self.log.requested_at
             response_ms = int(response_timedelta.total_seconds() * 1000)
 
             # save to log
-            request.log.response = response.rendered_content
-            request.log.status_code = response.status_code
-            request.log.response_ms = response_ms
-            request.log.save()
-        except AttributeError:
-            pass
+            self.log.response = response.rendered_content
+            self.log.status_code = response.status_code
+            self.log.response_ms = response_ms
+            self.log.save()
 
         # return
         return response
