@@ -1,18 +1,25 @@
 from .models import APIRequestLog
+from django.db import transaction
 from django.utils.timezone import now
+
+from rest_framework import exceptions
 
 
 class LoggingMixin(object):
     """Mixin to log requests"""
-    def initialize_request(self, request, *args, **kwargs):
+    def initial(self, request, *args, **kwargs):
         """Set current time on request"""
-        # regular intitialize
-        request = super(LoggingMixin, self).initialize_request(request, *args, **kwargs)
+        # regular initialize
+        super(LoggingMixin, self).initial(request, *args, **kwargs)
 
         # get user
-        if request.user.is_authenticated():
-            user = request.user
-        else:  # AnonymousUser
+        try:
+            if request.user.is_authenticated():
+                user = request.user
+            else:  # AnonymousUser
+                user = None
+        except exceptions.AuthenticationFailed:
+            # AuthenticationFailed exceptions are raised by django-rest-framework in case Token is invalid/expired
             user = None
 
         # get data dict
@@ -33,22 +40,24 @@ class LoggingMixin(object):
             data=data_dict,
         )
 
-        # return
-        return request
+    def dispatch(self, *args, **kwargs):
+        # Wrap normal processing in a transaction, so that even if
+        # there's an IntegrityError somewhere along the way, we can still
+        # log the response.
+        # http://stackoverflow.com/questions/21458387/transactionmanagementerror-you-cant-execute-queries-until-the-end-of-the-atom
+        with transaction.atomic():
+            response = super(LoggingMixin, self).dispatch(*args, **kwargs)
 
-    def finalize_response(self, request, response, *args, **kwargs):
-        # regular finalize response
-        response = super(LoggingMixin, self).finalize_response(request, response, *args, **kwargs)
+        if hasattr(self, 'log'):
+            # compute response time
+            response_timedelta = now() - self.log.requested_at
+            response_ms = int(response_timedelta.total_seconds() * 1000)
 
-        # compute response time
-        response_timedelta = now() - request.log.requested_at
-        response_ms = int(response_timedelta.total_seconds() * 1000)
-
-        # save to log
-        request.log.response = response.rendered_content
-        request.log.status_code = response.status_code
-        request.log.response_ms = response_ms
-        request.log.save()
+            # save to log
+            self.log.response = response.rendered_content
+            self.log.status_code = response.status_code
+            self.log.response_ms = response_ms
+            self.log.save()
 
         # return
         return response
